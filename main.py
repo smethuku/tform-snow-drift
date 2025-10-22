@@ -11,7 +11,9 @@ from dependencies import setup_logging, setup_environment
 from keepass_utils import get_keepass_title_cred
 from config_utils import get_config, load_resource_config
 from synonyms_utils import load_synonyms
-from terraform_utils import get_workspace_id, get_current_state_download_url, download_state_file, get_terraform_state
+from workspace_utils import get_workspace_id, get_current_state_download_url
+from state_file_utils import download_state_file
+from terraform_utils import get_terraform_state
 from snowflake_utils import get_snowflake_resources
 from resource_comparison import compare_resources
 from vault_utils import get_vault_client, retrieve_user_credentials
@@ -29,10 +31,10 @@ def parse_args():
     """
     parser = argparse.ArgumentParser(description="Compare Terraform state with Snowflake resources.")
     parser.add_argument("--alerts-location", required=True, help="Base directory for alerts and output files")
-    parser.add_argument("--accounts-config-file", required=True, help="Path to accounts configuration JSON file")
-    parser.add_argument("--server-cert-path", required=True, help="Path to server certificate file")
-    parser.add_argument("--drift-config", required=True, help="Path to drift configuration JSON file")
-    parser.add_argument("--synonyms-config", required=True, help="Path to synonyms configuration JSON file")
+    parser.add_argument("--accounts-config-file", default="config/accounts.json", help="Path to accounts configuration JSON file relative to alerts-location")
+    parser.add_argument("--server-cert-path", default="config/cert.pem", help="Path to server certificate file relative to alerts-location")
+    parser.add_argument("--drift-config", default="config/drift_resource_attributes.json", help="Path to drift configuration JSON file relative to alerts-location")
+    parser.add_argument("--synonyms-config", default="config/synonyms.json", help="Path to synonyms configuration JSON file relative to alerts-location")
     parser.add_argument("--tfc-api-base-url", required=True, help="Terraform Cloud API base URL")
     parser.add_argument("--tfc-org", required=True, help="Terraform Cloud organization name")
     parser.add_argument("--keepass-db", required=True, help="Path to KeePass database file")
@@ -106,13 +108,22 @@ def main():
         tfc_api_base_url = inputs.tfc_api_base_url
         tfc_org = inputs.tfc_org
 
+        # Construct configuration file paths relative to alerts_location
+        account_config_path = alerts_location / accounts_config_file
+        server_cert = alerts_location / server_cert_path
+        drift_config_path = alerts_location / drift_config
+        synonyms_config_path = alerts_location / synonyms_config
+
         # Validate input parameters
-        string_params = [accounts_config_file, server_cert_path, drift_config,
-                         synonyms_config, tfc_api_base_url, tfc_org]
+        string_params = [str(account_config_path), str(server_cert), str(drift_config_path),
+                         str(synonyms_config_path), tfc_api_base_url, tfc_org]
         if not all(isinstance(param, str) and param.strip() for param in string_params):
             raise ValueError("All input string parameters must be non-empty strings")
         if not alerts_location.is_dir():
             raise ValueError(f"alerts_location '{alerts_location}' is not a valid directory")
+        for config_file in [account_config_path, server_cert, drift_config_path, synonyms_config_path]:
+            if not config_file.exists():
+                raise ValueError(f"Configuration file '{config_file}' does not exist")
 
         # Retrieve Terraform Cloud API token from KeePass
         logger.info("Retrieving Terraform Cloud API token from KeePass...")
@@ -126,17 +137,13 @@ def main():
             "Content-Type": "application/vnd.api+json",
         }
 
-        # Construct file paths
-        account_config_path = alerts_location / accounts_config_file
-        server_cert = alerts_location / server_cert_path
-
         # Load account configuration
         logger.info("Loading account configuration...")
         account_config = get_config(str(account_config_path))
 
         # Load synonyms
         logger.info("Loading synonyms...")
-        synonyms = load_synonyms(synonyms_config)
+        synonyms = load_synonyms(str(synonyms_config_path))
 
         for val in account_config:
             required_fields = ["VAULT_URL", "SECRET_PATH", "VAULT_NAMESPACE", "MOUNT_POINT",
@@ -199,7 +206,7 @@ def main():
 
             # Load resource configuration
             logger.info("Loading resource configuration...")
-            resource_config = load_resource_config(drift_config)
+            resource_config = load_resource_config(str(drift_config_path))
 
             # Retrieve Terraform state manually using individual functions
             logger.info(f"Retrieving workspace ID for {tfc_workspace_name}...")

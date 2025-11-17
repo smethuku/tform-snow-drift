@@ -1,177 +1,175 @@
+# dependencies.py
 import importlib.util
+import subprocess
 import sys
-from pathlib import Path
 import logging
-from datetime import datetime
-from typing import Optional, Dict, Any
+from pathlib import Path
+from typing import Dict, Any
 
+# ----------------------------------------------------------------------
+# 1. Logging configuration (same timestamped file you already use)
+# ----------------------------------------------------------------------
 def setup_logging(log_dir: str = "logs") -> logging.Logger:
-    """
-    Configure logging for the application with console and timestamped file handlers.
+    log_path = Path(log_dir)
+    log_path.mkdir(parents=True, exist_ok=True)
 
-    The log file is named 'tf_snow_drift_YYYYMMDD_HHMM.log' based on the current timestamp.
-
-    Args:
-        log_dir (str): Directory where log files will be stored.
-
-    Returns:
-        logging.Logger: Configured logger instance for the application.
-
-    Raises:
-        ValueError: If log_dir is invalid.
-        RuntimeError: If log file directory creation fails.
-    """
+    timestamp = Path(__file__).stem  # fallback if called before main
     try:
-        # Validate input
-        if not isinstance(log_dir, str) or not log_dir.strip():
-            raise ValueError("log_dir must be a non-empty string")
-
-        # Create log directory
-        log_path = Path(log_dir)
-        log_path.mkdir(parents=True, exist_ok=True)
-
-        # Generate timestamped log file name
+        # Try to reuse the timestamp from main_workflow if it already exists
+        from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        log_file = f"tf_snow_drift_{timestamp}.log"
-        log_file_path = log_path / log_file
+    except Exception:
+        pass
 
-        # Configure logger
-        logger = logging.getLogger('app')
-        logger.setLevel(logging.INFO)
+    log_file = log_path / f"tf_snow_drift_{timestamp}.log"
 
-        # Avoid adding handlers multiple times
-        if not logger.handlers:
-            # Console handler
-            console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setLevel(logging.INFO)
-            console_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
-            console_handler.setFormatter(console_formatter)
-            logger.addHandler(console_handler)
+    logger = logging.getLogger('app')
+    logger.setLevel(logging.INFO)
 
-            # File handler
-            file_handler = logging.FileHandler(log_file_path)
-            file_handler.setLevel(logging.INFO)
-            file_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
-            file_handler.setFormatter(file_formatter)
-            logger.addHandler(file_handler)
+    if not logger.handlers:                     # avoid duplicate handlers
+        # Console
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s"))
+        logger.addHandler(ch)
 
-        return logger
+        # File
+        fh = logging.FileHandler(log_file)
+        fh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s"))
+        logger.addHandler(fh)
 
-    except ValueError as ve:
-        raise ValueError(f"Error [setup_logging]: Invalid input - {ve}")
-    except Exception as e:
-        raise RuntimeError(f"Error [setup_logging]: Failed to configure logging - {e}")
+    return logger
 
-# Required dependencies with minimum versions
+
+logger = setup_logging()
+
+
+# ----------------------------------------------------------------------
+# 2. Install missing packages from requirements.txt
+# ----------------------------------------------------------------------
+def install_requirements(req_file: Path = Path("requirements.txt")) -> None:
+    """
+    Read ``requirements.txt`` and ``pip install`` any package that is not importable.
+    """
+    if not req_file.is_file():
+        logger.error(f"requirements.txt not found at {req_file.resolve()}")
+        raise FileNotFoundError(f"requirements.txt missing: {req_file}")
+
+    with req_file.open("r", encoding="utf-8") as f:
+        requirements = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+
+    missing = []
+    for req in requirements:
+        # Extract package name (before any version specifier)
+        pkg_name = req.split("==")[0].split(">=")[0].split("<=")[0].split("~=")[0].strip()
+        if not importlib.util.find_spec(pkg_name.replace("-", "_")):
+            missing.append(req)
+
+    if missing:
+        logger.info(f"Installing {len(missing)} missing package(s): {', '.join(missing)}")
+        try:
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install", *missing
+            ])
+            logger.info("All missing packages installed successfully.")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to install packages: {e}")
+            raise RuntimeError("Dependency installation failed.") from e
+    else:
+        logger.info("All required packages are already available.")
+
+
+# ----------------------------------------------------------------------
+# 3. Original version-check (now optional – runs after install)
+# ----------------------------------------------------------------------
 DEPENDENCIES = {
     "hvac": {"min_version": "1.0.0", "purpose": "HashiCorp Vault interactions"},
     "snowflake.connector": {"min_version": "2.7.0", "purpose": "Snowflake database queries"},
     "pykeepass": {"min_version": "4.0.0", "purpose": "KeePass database access"},
     "requests": {"min_version": "2.25.0", "purpose": "HTTP requests for Terraform Cloud API"},
     "cryptography": {"min_version": "3.4.0", "purpose": "Private key handling for Snowflake"},
-    "smtplib": {"min_version": None, "purpose": "Email notifications"},
+    # smtplib is stdlib → no version check
 }
 
 def check_dependencies() -> Dict[str, Any]:
     """
-    Check if required dependencies are installed and meet minimum version requirements.
-
-    Returns:
-        Dict[str, Any]: A dictionary with dependency names and status details.
-
-    Raises:
-        RuntimeError: If any critical dependency is missing or incompatible.
+    Verify that all required libraries are importable and meet minimum versions.
+    Returns a status dictionary; raises RuntimeError only on **critical** failures.
     """
-    try:
-        logger = logging.getLogger('app.dependencies')
-        dependency_status = {}
-        has_errors = False
+    status_dict: Dict[str, Any] = {}
+    critical = False
 
-        for module_name, info in DEPENDENCIES.items():
-            status = {"installed": False, "version": None, "min_version": info["min_version"], "error": None}
+    for mod, info in DEPENDENCIES.items():
+        entry = {
+            "installed": False,
+            "version": None,
+            "min_version": info["min_version"],
+            "error": None,
+        }
+
+        spec = importlib.util.find_spec(mod)
+        if spec is None:
+            entry["error"] = f"Module {mod} not found. Required for {info['purpose']}."
+            critical = True
+        else:
+            entry["installed"] = True
             try:
-                module_spec = importlib.util.find_spec(module_name)
-                if module_spec is None:
-                    status["error"] = f"Module {module_name} not found. Required for {info['purpose']}."
-                    has_errors = True
-                else:
-                    status["installed"] = True
-                    module = importlib.import_module(module_name)
-                    if info["min_version"]:
-                        try:
-                            version = getattr(module, "__version__", None) or module.__version__
-                            status["version"] = version
-                            if version < info["min_version"]:
-                                status["error"] = (
-                                    f"Module {module_name} version {version} is below required minimum {info['min_version']}"
-                                )
-                                has_errors = True
-                        except AttributeError:
-                            status["error"] = f"Module {module_name} does not provide version information"
-                            has_errors = True
-                dependency_status[module_name] = status
-            except Exception as e:
-                status["error"] = f"Error checking module {module_name}: {e}"
-                has_errors = True
-                dependency_status[module_name] = status
+                module = importlib.import_module(mod)
+                if info["min_version"]:
+                    ver = getattr(module, "__version__", None)
+                    entry["version"] = ver or "unknown"
+                    if ver and ver < info["min_version"]:
+                        entry["error"] = (
+                            f"{mod} version {ver} < required {info['min_version']}"
+                        )
+                        critical = True
+            except Exception as exc:
+                entry["error"] = f"Error inspecting {mod}: {exc}"
+                critical = True
 
-        for module_name, status in dependency_status.items():
-            if status["error"]:
-                logger.error(status["error"])
-            else:
-                logger.info(f"Module {module_name}: Installed (version: {status['version'] or 'N/A'})")
+        status_dict[mod] = entry
 
-        if has_errors:
-            raise RuntimeError("One or more dependencies are missing or incompatible. Check logs for details.")
+    # ----- logging -----
+    for mod, st in status_dict.items():
+        if st["error"]:
+            logger.error(st["error"])
+        else:
+            logger.info(f"{mod}: installed (v{st['version']})")
 
-        return dependency_status
+    if critical:
+        raise RuntimeError("Critical dependency issues detected – see log for details.")
 
-    except Exception as e:
-        logger = logging.getLogger('app.dependencies')
-        logger.error(f"Error [check_dependencies]: Failed to verify dependencies - {e}")
-        raise RuntimeError(f"Failed to verify dependencies: {e}")
+    return status_dict
 
+
+# ----------------------------------------------------------------------
+# 4. Public helper called from main_workflow.py
+# ----------------------------------------------------------------------
+def ensure_dependencies(req_file: Path = Path("requirements.txt")) -> None:
+    """
+    One-stop function:
+      1. Install anything missing from requirements.txt
+      2. Run the version-check safety net
+    """
+    logger.info("Ensuring all Python dependencies are satisfied...")
+    install_requirements(req_file)
+    check_dependencies()
+    logger.info("Dependency check completed successfully.")
+
+
+# ----------------------------------------------------------------------
+# 5. Environment setup (directories + deps)
+# ----------------------------------------------------------------------
 def setup_environment(alerts_location: str, log_dir: str = "logs") -> None:
     """
-    Set up the environment for the application, including directory creation, logging, and dependency checks.
-
-    Args:
-        alerts_location (str): Base directory for alerts, state files, and output files.
-        log_dir (str): Directory for log files.
-
-    Raises:
-        ValueError: If alerts_location or log_dir is invalid.
-        RuntimeError: If dependency checks or directory creation fails.
+    Create needed folders and guarantee dependencies.
     """
-    try:
-        # Setup logging
-        setup_logging(log_dir)
+    alerts_path = Path(alerts_location).resolve()
+    if not alerts_path.exists():
+        logger.info(f"Creating alerts directory: {alerts_path}")
+        alerts_path.mkdir(parents=True, exist_ok=True)
 
-        # Validate alerts_location
-        logger = logging.getLogger('app.dependencies')
-        alerts_path = Path(alerts_location).resolve()
-        if not isinstance(alerts_location, str) or not alerts_location.strip():
-            raise ValueError("alerts_location must be a non-empty string")
-        if not alerts_path.exists():
-            logger.info(f"Creating alerts directory: {alerts_path}")
-            alerts_path.mkdir(parents=True, exist_ok=True)
-        elif not alerts_path.is_dir():
-            raise ValueError(f"alerts_location '{alerts_location}' is not a directory")
+    (alerts_path / "TerraformStateFile").mkdir(parents=True, exist_ok=True)
+    (alerts_path / "Drift_Output").mkdir(parents=True, exist_ok=True)
 
-        # Create standard subdirectories
-        (alerts_path / "TerraformStateFile").mkdir(parents=True, exist_ok=True)
-        (alerts_path / "Drift_Output").mkdir(parents=True, exist_ok=True)
-
-        # Check dependencies
-        check_dependencies()
-
-        logger.info("Environment setup completed successfully")
-
-    except ValueError as ve:
-        logger = logging.getLogger('app.dependencies')
-        logger.error(f"Error [setup_environment]: Invalid input - {ve}")
-        raise
-    except Exception as e:
-        logger = logging.getLogger('app.dependencies')
-        logger.error(f"Error [setup_environment]: Failed to set up environment - {e}")
-        raise RuntimeError(f"Failed to set up environment: {e}")
+    # Ensure deps *after* folders exist (helps pip write cache)
+    ensure_dependencies()

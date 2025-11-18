@@ -1,8 +1,9 @@
 import logging
-from dependencies import setup_logging
+from components import dependencies 
+from pykeepass import PyKeePass
 
 # Initialize logger
-logger = setup_logging()
+logger = dependencies.setup_logging()
 logger = logging.getLogger('app.keepass_utils')
 
 def get_keepass_title_cred(kp_db: str, kp_key_file: str, kp_title: str):
@@ -17,15 +18,12 @@ def get_keepass_title_cred(kp_db: str, kp_key_file: str, kp_title: str):
     Returns:
         PyKeePass entry object: The first entry matching the specified title, containing credential details.
         None: If no entry is found or an error occurs.
-
-    Raises:
-        FileNotFoundError: If the database file or key file does not exist.
-        Exception: For other errors during database access or entry retrieval.
     """
     try:
         # Validate input parameters
         if not kp_db or not kp_key_file or not kp_title:
-            raise ValueError("All parameters (kp_db, kp_key_file, kp_title) must be non-empty strings")
+            logger.error("All parameters (kp_db, kp_key_file, kp_title) must be non-empty strings")
+            return None
 
         # Initialize PyKeePass with database and key file
         kp = PyKeePass(filename=kp_db, keyfile=kp_key_file)

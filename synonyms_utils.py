@@ -1,10 +1,10 @@
 import json
 import logging
 from typing import Dict
-from dependencies import setup_logging
+from components import dependencies 
 
 # Initialize logger
-logger = setup_logging()
+logger = dependencies.setup_logging()
 logger = logging.getLogger('app.synonyms_utils')
 
 def load_synonyms(synonyms_config: str) -> Dict[str, Dict[str, Dict[str, str]]]:
@@ -16,18 +16,12 @@ def load_synonyms(synonyms_config: str) -> Dict[str, Dict[str, Dict[str, str]]]:
 
     Returns:
         Dict[str, Dict[str, Dict[str, str]]]: A nested dictionary containing the synonyms mapping.
-
-    Raises:
-        ValueError: If the synonyms_config path is empty or not a string.
-        FileNotFoundError: If the specified configuration file does not exist.
-        json.JSONDecodeError: If the file contains invalid JSON.
-        ValueError: If the loaded data is not a dictionary.
-        RuntimeError: For other unexpected errors during file reading or parsing.
     """
     try:
         # Validate input parameter
         if not isinstance(synonyms_config, str) or not synonyms_config.strip():
-            raise ValueError("synonyms_config must be a non-empty string")
+            logger.error("synonyms_config must be a non-empty string")
+            return None
 
         # Open and read the JSON configuration file
         with open(synonyms_config, "r") as f:
@@ -35,19 +29,20 @@ def load_synonyms(synonyms_config: str) -> Dict[str, Dict[str, Dict[str, str]]]:
 
         # Verify that the loaded data is a dictionary
         if not isinstance(synonyms_data, dict):
-            raise ValueError("Synonyms configuration file must contain a dictionary")
+            logger.error("Synonyms configuration file must contain a dictionary")
+            return None
 
         return synonyms_data
 
     except FileNotFoundError as fnf_error:
         logger.error(f"Configuration file not found - {fnf_error}")
-        raise RuntimeError(f"Configuration file not found: {fnf_error}")
+        return None
     except json.JSONDecodeError as json_error:
         logger.error(f"Invalid JSON format in config file - {json_error}")
-        raise RuntimeError(f"Invalid JSON format in config file: {json_error}")
+        return None
     except ValueError as ve:
         logger.error(f"Invalid input or data format - {ve}")
-        raise RuntimeError(f"Invalid input or data format: {ve}")
+        return None
     except Exception as e:
         logger.error(f"Failed to load synonyms configuration - {e}")
-        raise RuntimeError(f"Failed to load synonyms configuration: {e}")
+        return None

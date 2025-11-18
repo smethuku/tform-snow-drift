@@ -3,10 +3,10 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 import logging
 from typing import List, Dict, Any
-from dependencies import setup_logging
+from components import dependencies 
 
 # Initialize logger
-logger = setup_logging()
+logger = dependencies.setup_logging()
 logger = logging.getLogger('app.snowflake_utils')
 
 def get_snowflake_resources(resource: str, attributes: List[str], sql_query: str, host: str, account_name: str, user_name: str, private_key: str, snow_warehouse: str, snow_role: str, snow_db: str) -> List[Dict[str, Any]]:
@@ -27,20 +27,19 @@ def get_snowflake_resources(resource: str, attributes: List[str], sql_query: str
 
     Returns:
         List[Dict[str, Any]]: A list of dictionaries with requested attributes and values.
-
-    Raises:
-        ValueError: If inputs are invalid.
-        RuntimeError: If Snowflake connection or query fails.
     """
     try:
         # Validate input parameters
         string_params = [resource, sql_query, host, account_name, user_name, private_key, snow_warehouse, snow_role, snow_db]
         if not all(isinstance(param, str) and param.strip() for param in string_params):
-            raise ValueError("All string parameters must be non-empty strings")
+            logger.error("All string parameters must be non-empty strings")
+            return None
         if not isinstance(attributes, list) or not attributes:
-            raise ValueError("attributes must be a non-empty list of strings")
+            logger.error("attributes must be a non-empty list of strings")
+            return None
         if not all(isinstance(attr, str) and attr.strip() for attr in attributes):
-            raise ValueError("All attributes must be non-empty strings")
+            logger.error("All attributes must be non-empty strings")
+            return None
 
         # Load and serialize the private key
         try:
@@ -56,7 +55,8 @@ def get_snowflake_resources(resource: str, attributes: List[str], sql_query: str
             )
         except Exception as key_error:
             logger.error(f"Invalid private key format - {key_error}")
-            raise ValueError(f"Invalid private key format: {key_error}")
+            return None
+            
 
         # Establish connection to Snowflake
         conn = snowflake.connector.connect(
@@ -76,9 +76,8 @@ def get_snowflake_resources(resource: str, attributes: List[str], sql_query: str
         # Execute the SQL query
         if sql_query.strip().upper().startswith("SHOW"):
             cursor.execute(sql_query)
-            rows = cursor.fetchall()
             while cursor.nextset():
-                rows.extend(cursor.fetchall())
+                rows = cursor.fetchall()
         else:
             cursor.execute(sql_query)
             rows = cursor.fetchall()
@@ -90,25 +89,30 @@ def get_snowflake_resources(resource: str, attributes: List[str], sql_query: str
         # Validate attributes in query results
         for attr in attributes:
             if attr.upper() not in col_index:
-                raise RuntimeError(f"Attribute '{attr}' not found in Snowflake query results for {resource}")
+                logger.error(f"Attribute '{attr}' not found in Snowflake query results for {resource}")
+                return None
 
         # Build list of dictionaries with requested attributes
         resources = []
         for row in rows:
-            resource_dict = {attr: row[col_index[attr.upper()]] for attr in attributes}
+            resource_dict = {}
+            for attr in attributes:
+                value = row[col_index[attr.upper()]]
+                resource_dict[attr] = value
             resources.append(resource_dict)
 
         return resources
 
     except ValueError as ve:
-        logger.error(f"Invalid input - {ve}")
-        raise RuntimeError(f"Invalid input: {ve}")
+        logger.error(f"Invalid input - {ve}")        
+        return None
     except snowflake.connector.errors.DatabaseError as db_error:
-        logger.error(f"Snowflake database error for {resource} - {db_error}")
-        raise RuntimeError(f"Snowflake database error for {resource}: {db_error}")
+        logger.error(f"Snowflake database error for {resource} - {db_error}")        
+        return None
     except Exception as e:
         logger.error(f"Failed to query Snowflake for {resource} - {e}")
-        raise RuntimeError(f"Failed to query Snowflake for {resource}: {e}")
+        return None
+        
     finally:
         if 'cursor' in locals():
             cursor.close()

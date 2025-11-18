@@ -1,6 +1,6 @@
 import logging
 from typing import Dict, List, Any
-from dependencies import setup_logging
+from components.dependencies import setup_logging
 
 # Initialize logger
 logger = setup_logging()
@@ -19,23 +19,24 @@ def compare_resources(tf_state: Dict[str, Any], sf_resources: List[Dict[str, Any
 
     Returns:
         List[Dict[str, Any]]: A list of dictionaries describing detected drifts.
-
-    Raises:
-        ValueError: If inputs are invalid.
-        RuntimeError: For unexpected errors during comparison.
     """
     try:
         # Validate input parameters
         if not isinstance(tf_state, dict):
-            raise ValueError("tf_state must be a dictionary")
+            logger.error("tf_state must be a dictionary")
+            return None
         if not isinstance(sf_resources, list):
-            raise ValueError("sf_resources must be a list of dictionaries")
+            logger.error("sf_resources must be a list of dictionaries")
+            return None
         if not isinstance(resource, str) or not resource.strip():
-            raise ValueError("resource must be a non-empty string")
+            logger.error("resource must be a non-empty string")
+            return None
         if not isinstance(attributes, list) or not attributes or not all(isinstance(attr, str) and attr.strip() for attr in attributes):
-            raise ValueError("attributes must be a non-empty list of non-empty strings")
+            logger.error("attributes must be a non-empty list of non-empty strings")
+            return None
         if not isinstance(synonyms, dict):
-            raise ValueError("synonyms must be a dictionary")
+            logger.error("synonyms must be a dictionary")
+            return None
 
         drifts = []
         tf_resource_type = f"snowflake_{resource.lower()}"
@@ -43,15 +44,16 @@ def compare_resources(tf_state: Dict[str, Any], sf_resources: List[Dict[str, Any
         # Extract resources from Terraform state
         tf_resources = []
         for res in tf_state.get("resources", []):
-            if not isinstance(res, dict) or "type" not in res or "instances" not in res:
-                continue
             if res["type"] == tf_resource_type:
-                tf_resources.extend([instance["attributes"] for instance in res["instances"] if isinstance(instance, dict) and "attributes" in instance])
+                tf_resources.extend([instance["attributes"] for instance in res["instances"]])
 
         # Create dictionaries for comparison
-        key_field = "login_name" if tf_resource_type == "snowflake_user" else "name"
-        tf_res_map = {res[key_field]: res for res in tf_resources if key_field in res}
-        sf_res_map = {res[key_field]: res for res in sf_resources if key_field in res}
+        if tf_resource_type == "snowflake_user":
+            tf_res_map = {res["login_name"]: res for res in tf_resources}
+            sf_res_map = {res["login_name"]: res for res in sf_resources}  
+        else:
+            tf_res_map = {res["name"]: res for res in tf_resources}
+            sf_res_map = {res["name"]: res for res in sf_resources}
 
         # Compare resources
         for res_name in set(tf_res_map.keys()) | set(sf_res_map.keys()):
@@ -93,7 +95,8 @@ def compare_resources(tf_state: Dict[str, Any], sf_resources: List[Dict[str, Any
 
     except ValueError as ve:
         logger.error(f"Invalid input - {ve}")
-        raise RuntimeError(f"Invalid input: {ve}")
+        return None
     except Exception as e:
         logger.error(f"Failed to compare resources for {resource} - {e}")
-        raise RuntimeError(f"Failed to compare resources for {resource}: {e}")
+        return None
+        

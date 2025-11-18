@@ -1,9 +1,9 @@
 import hvac
 import logging
-from dependencies import setup_logging
+from components import dependencies
 
 # Initialize logger
-logger = setup_logging()
+logger = dependencies.setup_logging()
 logger = logging.getLogger('app.vault_utils')
 
 
@@ -21,16 +21,13 @@ def get_vault_client(account_name: str, vault_url: str, role_id: str, secret_id:
 
     Returns:
         hvac.Client: An authenticated Vault client instance, or None if authentication fails.
-
-    Raises:
-        ValueError: If any input string parameter is empty or not a string.
-        RuntimeError: If authentication to Vault fails or an unexpected error occurs.
     """
     try:
         # Validate input parameters
         string_params = [account_name, vault_url, role_id, secret_id, vault_namespace, server_cert]
         if not all(isinstance(param, str) and param.strip() for param in string_params):
-            raise ValueError("All input parameters must be non-empty strings")
+            logger.error("All input parameters must be non-empty strings")
+            return None
 
         # Initialize Vault client
         client = hvac.Client(url=vault_url, namespace=vault_namespace, verify=server_cert)
@@ -38,7 +35,8 @@ def get_vault_client(account_name: str, vault_url: str, role_id: str, secret_id:
         # Authenticate using AppRole
         app_role_auth = client.auth.approle.login(role_id=role_id, secret_id=secret_id)
         if not app_role_auth.get('auth'):
-            raise RuntimeError("Vault authentication response missing 'auth' field")
+            logger.error("Vault authentication response missing 'auth' field")
+            return None
 
         logger.info(f"Successfully authenticated to Vault for account {account_name}")
         return client
@@ -67,30 +65,31 @@ def retrieve_user_credentials(account_name: str, client: hvac.Client, secret_pat
 
     Returns:
         str: The RSA private key retrieved from Vault, or None if retrieval fails.
-
-    Raises:
-        ValueError: If secret_path or mount_point is empty or not a string, or if client is None.
-        RuntimeError: If the secret retrieval fails or the expected key is missing.
     """
     try:
         # Validate input parameters
         if not isinstance(client, hvac.Client):
-            raise ValueError("client must be a valid hvac.Client instance")
+            logger.error("client must be a valid hvac.Client instance")
+            return None
         if not all(isinstance(param, str) and param.strip() for param in [secret_path, mount_point]):
-            raise ValueError("secret_path and mount_point must be non-empty strings")
+            logger.error("secret_path and mount_point must be non-empty strings")
+            return None
 
         # Read the secret from Vault
         read_response = client.secrets.kv.v1.read_secret(path=secret_path, mount_point=mount_point)
 
         # Verify the response contains the expected key
         if not isinstance(read_response, dict) or 'data' not in read_response:
-            raise RuntimeError("Invalid Vault response: 'data' field missing")
+            logger.error("Invalid Vault response: 'data' field missing")
+            return None
         if 'rsa_private_key' not in read_response['data']:
-            raise RuntimeError("Secret response missing 'rsa_private_key' field")
+            logger.error("Secret response missing 'rsa_private_key' field")
+            return None
 
         private_key = read_response['data']['rsa_private_key']
         if not isinstance(private_key, str) or not private_key.strip():
-            raise RuntimeError("Retrieved rsa_private_key is empty or invalid")
+            logger.error("Retrieved rsa_private_key is empty or invalid")
+            return None
 
         return private_key
 

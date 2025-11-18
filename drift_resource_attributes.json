@@ -1,0 +1,23 @@
+[
+    {
+        "Resource": "Warehouse",
+        "Attributes": ["name", "warehouse_size", "warehouse_type","auto_resume","auto_suspend","enable_query_acceleration","max_cluster_count","min_cluster_count","query_acceleration_max_scale_factor","resource_monitor","scaling_policy"],
+        "Sql": "SHOW WAREHOUSES; SELECT \"name\", \"size\" as warehouse_size,\"type\" as warehouse_type,\"auto_resume\",\"auto_suspend\",\"enable_query_acceleration\",\"max_cluster_count\",\"min_cluster_count\",\"query_acceleration_max_scale_factor\",\"resource_monitor\",\"scaling_policy\",FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));"
+    },
+    {
+        "Resource": "Database",
+        "Attributes": ["name", "comment", "data_retention_time_in_days"],
+        "Sql": "SHOW DATABASES; SELECT \"name\",\"comment\", \"retention_time\" as data_retention_time_in_days FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));"
+    },
+	{
+        "Resource": "User",
+        "Attributes": ["name", "login_name", "display_name","first_name","last_name","email","must_change_password","disabled","default_warehouse","default_namespace","default_role","default_secondary_roles","comment"],
+        "Sql": "SHOW USERS; SELECT \"name\", \"login_name\", \"display_name\",\"first_name\",\"last_name\",\"email\",\"must_change_password\",\"disabled\",\"default_warehouse\",\"default_namespace\",\"default_role\",\"default_secondary_roles\",\"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));"
+        
+    }
+
+
+]
+
+
+

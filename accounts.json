@@ -1,0 +1,19 @@
+[
+      {  
+        "ACCOUNT_NAME":"",
+        "HOST": "",
+        "USER_NAME": "",
+        "SNOWFLAKE_WAREHOUSE": "",
+        "SNOWFLAKE_ROLE": "",
+        "SNOWFLAKE_SECURITY_ROLE": "",
+        "SNOWFLAKE_DB": "",
+        "VAULT_URL": "",
+        "SECRET_PATH": "",
+        "VAULT_NAMESPACE": "",
+        "MOUNT_POINT": "",
+        "EMAIL_RECIPIENTS": "",
+        "SENDER_EMAIL": "",
+        "TFC_WORKSPACE_NAME": ""
+    }
+
+]

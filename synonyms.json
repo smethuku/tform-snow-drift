@@ -1,0 +1,47 @@
+{
+    "Warehouse": {
+        "warehouse_size": {
+            "XSMALL": "X-SMALL"
+        },
+        "resource_monitor": {
+            "NULL": "", 
+            "NONE":"NULL"
+        }
+    },
+    "User": {
+        "first_name": {
+            "NULL": "", 
+            "NONE":"NULL"
+        },
+        "last_name": {
+            "NULL": "", 
+            "NONE":"NULL"
+        },
+        "email": {
+            "NULL": "", 
+            "NONE":"NULL"
+        },
+        "default_warehouse": {
+            "NULL": "", 
+            "NONE":"NULL"
+        },
+        "default_namespace": {
+            "NULL": "", 
+            "NONE":"NULL"
+        },
+        "default_role": {
+            "NULL": "", 
+            "NONE":"NULL"
+        },
+        "default_secondary_roles": {
+            "NULL": "", 
+            "NONE":"NULL", 
+            "['ALL']": "ALL", 
+            "[\"ALL\"]": "ALL"
+        },
+        "comment": {
+            "NULL": "", 
+            "NONE":"NULL"
+        }
+    }
+}

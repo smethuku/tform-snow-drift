@@ -55,3 +55,39 @@ print(json.dumps(state, indent=2))
 # Save to file
 with open(f"terraform.tfstate.{WS}", "w", encoding="utf-8") as f:
     json.dump(state, f, indent=2)
+
+-------------------------------------------------
+import os
+import json
+from pytfe import TFEClient, TFEConfig
+
+# ── Configuration ────────────────────────────────────────────────
+ORGANIZATION   = "your-org-name"
+WORKSPACE_NAME = "my-awesome-infra"
+TOKEN          = os.getenv("TFC_TOKEN")          # Recommended: use env var
+
+# ── Code ─────────────────────────────────────────────────────────
+config = TFEConfig(
+    address="https://app.terraform.io",          # change if using private TFE
+    token=TOKEN
+)
+
+client = TFEClient(config)
+
+# Get workspace
+ws = client.workspaces.read(ORGANIZATION, WORKSPACE_NAME)
+
+# Get current state version
+state_version = client.state_versions.current(ws.id)
+
+# Download the actual state (returns bytes)
+state_content = client.state_versions.download(state_version.download_url)
+
+# Parse & pretty print
+state = json.loads(state_content)
+print(json.dumps(state, indent=2))
+
+# Optional: save to file
+with open(f"terraform.tfstate.{WORKSPACE_NAME}", "w", encoding="utf-8") as f:
+    json.dump(state, f, indent=2)
+    print(f"\nState saved to terraform.tfstate.{WORKSPACE_NAME}")

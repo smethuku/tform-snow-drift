@@ -28,3 +28,30 @@ print(json.dumps(state, indent=2))
 # Save
 with open(f"terraform.tfstate.{WS}", "w", encoding="utf-8") as f:
     json.dump(state, f, indent=2)
+--------------------------------------------
+from terrasnek.api import TFC
+import os
+import json
+
+TOKEN = os.getenv("TFC_TOKEN")
+ORG   = "your-org-name"
+WS    = "my-awesome-infra"
+
+api = TFC(TOKEN, url="https://app.terraform.io")
+api.set_org(ORG)
+
+ws = api.workspaces.show(WS)["data"]
+ws_id = ws["id"]
+
+current_state = api.state_versions.current(ws_id)["data"]
+download_url = current_state["attributes"]["hosted-state-download-url"]
+
+# Download raw state (returns bytes)
+state_bytes = api.state_versions.download(download_url)
+
+state = json.loads(state_bytes)
+print(json.dumps(state, indent=2))
+
+# Save to file
+with open(f"terraform.tfstate.{WS}", "w", encoding="utf-8") as f:
+    json.dump(state, f, indent=2)

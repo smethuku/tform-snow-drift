@@ -94,7 +94,6 @@ def send_drift_email(subject: str, account_name: str, drift_output: Dict[str, Li
                         padding: 20px;
                     }}
                     table {{
-                        width: 100%;
                         border-collapse: collapse;
                         margin: 20px 0;
                     }}
@@ -209,4 +208,193 @@ Drift Detected in the Following Resource Types:
         
     except Exception as e:
         logger.error(f"Failed to send drift email: {e}")
+        return False
+
+
+def send_consolidated_drift_email(
+    account_drift_summary: List[Dict[str, Any]], 
+    sender_email: str, 
+    recipients: str | List[str]
+) -> bool:
+    """
+    Send a consolidated HTML email notification summarizing drift across all accounts.
+
+    Args:
+        account_drift_summary (List[Dict[str, Any]]): List of dictionaries containing drift summary per account.
+            Each dict should have: 'account_name', 'total_drifts', 'resource_types', 'output_file'
+        sender_email (str): Sender's email address.
+        recipients (str | List[str]): Recipient email address(es).
+    
+    Returns:
+        bool: True if email sent successfully, False otherwise.
+    """
+    try:
+        if isinstance(recipients, str):
+            recipients = [recipients]
+        if not all(isinstance(r, str) and r.strip() for r in recipients):
+            logger.error("All recipients must be non-empty strings")
+            return False
+
+        # Filter accounts with drifts
+        accounts_with_drift = [acc for acc in account_drift_summary if acc['total_drifts'] > 0]
+        
+        if not accounts_with_drift:
+            logger.info("No drift detected across all accounts, skipping consolidated email")
+            return True
+
+        # Calculate totals
+        total_accounts_with_drift = len(accounts_with_drift)
+        grand_total_drifts = sum(acc['total_drifts'] for acc in accounts_with_drift)
+
+        # Create HTML email body
+        html_body = f"""
+        <html>
+            <head>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        line-height: 1.6;
+                        color: #333;
+                    }}
+                    .container {{
+                        max-width: 800px;
+                        margin: 0 auto;
+                        padding: 20px;
+                    }}
+                    .summary {{
+                        background-color: #f9f9f9;
+                        padding: 15px;
+                        border-radius: 5px;
+                        margin-bottom: 20px;
+                        border-left: 4px solid #666;
+                    }}
+                    table {{
+                        border-collapse: collapse;
+                        margin: 20px 0;
+                    }}
+                    th {{
+                        background-color: #f0f0f0;
+                        color: #333;
+                        padding: 10px;
+                        text-align: left;
+                        font-weight: bold;
+                        border: 1px solid #ddd;
+                    }}
+                    td {{
+                        padding: 10px;
+                        border: 1px solid #ddd;
+                    }}
+                    .account-section {{
+                        margin-top: 30px;
+                        padding-top: 20px;
+                        border-top: 2px solid #ddd;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h2>Snowflake-Terraform Drift Detection Summary</h2>
+                    
+                    <div class="summary">
+                        <p><strong>Total Accounts with Drift:</strong> {total_accounts_with_drift}</p>
+                        <p><strong>Grand Total Drifts:</strong> {grand_total_drifts}</p>
+                    </div>
+        """
+
+        # Add section for each account
+        for account in accounts_with_drift:
+            account_name = account['account_name']
+            total_drifts = account['total_drifts']
+            resource_types = account['resource_types']
+            output_file = account.get('output_file', 'N/A')
+            
+            html_body += f"""
+                    <div class="account-section">
+                        <h3>Account: {account_name}</h3>
+                        <p><strong>Total Drifts:</strong> {total_drifts}</p>
+                        
+                        <p><strong>Drift Detected in the Following Resource Types:</strong></p>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Resource Type</th>
+                                    <th>Drift Count</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+            """
+            
+            # Add rows for each resource type in this account
+            for idx, (resource_type, drift_count) in enumerate(sorted(resource_types.items()), start=1):
+                html_body += f"""
+                                <tr>
+                                    <td>{idx}</td>
+                                    <td>{resource_type}</td>
+                                    <td>{drift_count}</td>
+                                </tr>
+                """
+            
+            html_body += f"""
+                            </tbody>
+                        </table>
+                        <p><strong>Drift Report Location:</strong> {output_file}</p>
+                    </div>
+            """
+
+        html_body += """
+                </div>
+            </body>
+        </html>
+        """
+
+        # Create plain text version as fallback
+        plain_text = f"""Snowflake-Terraform Drift Detection Summary
+{'=' * 50}
+
+Total Accounts with Drift: {total_accounts_with_drift}
+Grand Total Drifts: {grand_total_drifts}
+
+"""
+        
+        for account in accounts_with_drift:
+            account_name = account['account_name']
+            total_drifts = account['total_drifts']
+            resource_types = account['resource_types']
+            output_file = account.get('output_file', 'N/A')
+            
+            plain_text += f"""
+Account: {account_name}
+Total Drifts: {total_drifts}
+
+Drift Detected in the Following Resource Types:
+"""
+            for idx, (resource_type, drift_count) in enumerate(sorted(resource_types.items()), start=1):
+                plain_text += f"{idx}. {resource_type} - {drift_count} drift(s)\n"
+            
+            plain_text += f"\nDrift Report Location: {output_file}\n"
+            plain_text += "-" * 50 + "\n"
+
+        # Create multipart message
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = "Snowflake-Terraform Drift Detection - Consolidated Report"
+        msg['From'] = sender_email
+        msg['To'] = ", ".join(recipients)
+
+        # Attach both plain text and HTML versions
+        part1 = MIMEText(plain_text, 'plain')
+        part2 = MIMEText(html_body, 'html')
+        
+        msg.attach(part1)
+        msg.attach(part2)
+
+        # Send email
+        with smtplib.SMTP('mailrelay.dimensional.com') as server:
+            server.sendmail(sender_email, recipients, msg.as_string())
+
+        logger.info(f"Consolidated drift email sent successfully to {len(recipients)} recipient(s)")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to send consolidated drift email: {e}")
         return False

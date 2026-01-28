@@ -109,6 +109,13 @@ def send_drift_email(subject: str, account_name: str, drift_output: Dict[str, Li
                         padding: 10px;
                         border: 1px solid #ddd;
                     }}
+                    .attachment-note {{
+                        background-color: #e8f5e9;
+                        padding: 10px;
+                        border-radius: 5px;
+                        margin-top: 20px;
+                        border-left: 4px solid #4caf50;
+                    }}
                 </style>
             </head>
             <body>
@@ -139,12 +146,13 @@ def send_drift_email(subject: str, account_name: str, drift_output: Dict[str, Li
                             </tr>
             """
         
-        html_body += f"""
+        html_body += """
                         </tbody>
                     </table>
                     
-                    <p><strong>Drift Report Location:</strong> {output_file}</p>
-                    <p><em>Note: The drift report JSON file is attached to this email.</em></p>
+                    <div class="attachment-note">
+                        <p><strong>📎 Note:</strong> The drift report JSON file is attached to this email.</p>
+                    </div>
                 </div>
             </body>
         </html>
@@ -160,8 +168,7 @@ Drift Detected in the Following Resource Types:
             drift_count = len(drift_output[resource_type])
             plain_text += f"{idx}. {resource_type} - {drift_count} drift(s)\n"
         
-        plain_text += f"\nDrift Report Location: {output_file}"
-        plain_text += f"\n\nNote: The drift report JSON file is attached to this email."
+        plain_text += f"\n📎 Note: The drift report JSON file is attached to this email."
 
         # Create multipart message
         msg = MIMEMultipart('mixed')
@@ -217,7 +224,8 @@ def send_consolidated_drift_email(
     recipients: str | List[str]
 ) -> bool:
     """
-    Send a consolidated HTML email notification summarizing drift across all accounts.
+    Send a consolidated HTML email notification summarizing drift across all accounts
+    with all drift JSON files attached.
 
     Args:
         account_drift_summary (List[Dict[str, Any]]): List of dictionaries containing drift summary per account.
@@ -289,6 +297,13 @@ def send_consolidated_drift_email(
                         padding-top: 20px;
                         border-top: 2px solid #ddd;
                     }}
+                    .attachment-note {{
+                        background-color: #e8f5e9;
+                        padding: 10px;
+                        border-radius: 5px;
+                        margin-top: 20px;
+                        border-left: 4px solid #4caf50;
+                    }}
                 </style>
             </head>
             <body>
@@ -306,7 +321,6 @@ def send_consolidated_drift_email(
             account_name = account['account_name']
             total_drifts = account['total_drifts']
             resource_types = account['resource_types']
-            output_file = account.get('output_file', 'N/A')
             
             html_body += f"""
                     <div class="account-section">
@@ -335,14 +349,16 @@ def send_consolidated_drift_email(
                                 </tr>
                 """
             
-            html_body += f"""
+            html_body += """
                             </tbody>
                         </table>
-                        <p><strong>Drift Report Location:</strong> {output_file}</p>
                     </div>
             """
 
-        html_body += """
+        html_body += f"""
+                    <div class="attachment-note">
+                        <p><strong>📎 Attachments:</strong> All {total_accounts_with_drift} drift report JSON file(s) are attached to this email.</p>
+                    </div>
                 </div>
             </body>
         </html>
@@ -361,7 +377,6 @@ Grand Total Drifts: {grand_total_drifts}
             account_name = account['account_name']
             total_drifts = account['total_drifts']
             resource_types = account['resource_types']
-            output_file = account.get('output_file', 'N/A')
             
             plain_text += f"""
 Account: {account_name}
@@ -372,27 +387,56 @@ Drift Detected in the Following Resource Types:
             for idx, (resource_type, drift_count) in enumerate(sorted(resource_types.items()), start=1):
                 plain_text += f"{idx}. {resource_type} - {drift_count} drift(s)\n"
             
-            plain_text += f"\nDrift Report Location: {output_file}\n"
             plain_text += "-" * 50 + "\n"
 
+        plain_text += f"\n📎 Attachments: All {total_accounts_with_drift} drift report JSON file(s) are attached to this email."
+
         # Create multipart message
-        msg = MIMEMultipart('alternative')
+        msg = MIMEMultipart('mixed')
         msg['Subject'] = "Snowflake-Terraform Drift Detection - Consolidated Report"
         msg['From'] = sender_email
         msg['To'] = ", ".join(recipients)
 
+        # Create alternative part for text and HTML
+        msg_alternative = MIMEMultipart('alternative')
+        
         # Attach both plain text and HTML versions
         part1 = MIMEText(plain_text, 'plain')
         part2 = MIMEText(html_body, 'html')
         
-        msg.attach(part1)
-        msg.attach(part2)
+        msg_alternative.attach(part1)
+        msg_alternative.attach(part2)
+        msg.attach(msg_alternative)
+
+        # Attach all JSON files from accounts with drift
+        attached_count = 0
+        for account in accounts_with_drift:
+            output_file = account.get('output_file')
+            if output_file:
+                try:
+                    output_path = Path(output_file)
+                    if output_path.exists() and output_path.is_file():
+                        with open(output_file, 'rb') as f:
+                            attachment = MIMEApplication(f.read(), _subtype='json')
+                            attachment.add_header(
+                                'Content-Disposition', 
+                                'attachment', 
+                                filename=output_path.name
+                            )
+                            msg.attach(attachment)
+                        attached_count += 1
+                        logger.info(f"Attached drift file: {output_path.name}")
+                    else:
+                        logger.warning(f"Output file not found for attachment: {output_file}")
+                except Exception as attach_error:
+                    logger.error(f"Failed to attach drift file {output_file}: {attach_error}")
+                    # Continue with other attachments
 
         # Send email
         with smtplib.SMTP('mailrelay.dimensional.com') as server:
             server.sendmail(sender_email, recipients, msg.as_string())
 
-        logger.info(f"Consolidated drift email sent successfully to {len(recipients)} recipient(s)")
+        logger.info(f"Consolidated drift email sent successfully with {attached_count} attachment(s) to {len(recipients)} recipient(s)")
         return True
         
     except Exception as e:

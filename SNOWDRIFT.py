@@ -123,7 +123,8 @@ def main():
             failures.append(error)
             return
 
-        for val in account_config:
+        def process_account(val: Dict[str, Any]) -> List[str]:
+            account_failures = []
             required_fields = ["VAULT_URL", "SECRET_PATH", "VAULT_NAMESPACE", "MOUNT_POINT",
                               "ACCOUNT_NAME", "HOST", "USER_NAME", "EMAIL_RECIPIENTS",
                               "SENDER_EMAIL", "SNOWFLAKE_WAREHOUSE", "SNOWFLAKE_ROLE",
@@ -131,8 +132,7 @@ def main():
             if not isinstance(val, dict) or not all(field in val for field in required_fields):
                 error = "Invalid account configuration: missing required fields"
                 logger.error(error)
-                failures.append(error)
-                continue
+                return [error]
 
             vault_url = val["VAULT_URL"]
             secret_path = val["SECRET_PATH"]
@@ -153,14 +153,12 @@ def main():
                 user_name, sender_email, snow_warehouse, snow_role, snow_db, tfc_workspace_name
             ]):
                 error = f"Invalid configuration for account {account_name}: all fields must be non-empty strings"
-                logger.error()
-                failures.append(error)
-                continue
+                logger.error(error)
+                return [error]
             if not isinstance(email_recipients, (str, list)) or (isinstance(email_recipients, str) and not email_recipients.strip()):
                 error = f"Invalid email_recipients for account {account_name}"
                 logger.error(error)
-                failures.append(error)
-                continue
+                return [error]
 
             # Retrieve Vault credentials from KeePass
             logger.info(f"Retrieving Vault credentials for user {user_name}...")
@@ -168,8 +166,7 @@ def main():
             if vault_entries is None:
                 error = f"Vault credentials for user {user_name} not found in KeePass"
                 logger.error(error)
-                failures.append(error)
-                continue
+                return [error]
             role_id = vault_entries.username
             secret_id = vault_entries.password
 
@@ -179,8 +176,7 @@ def main():
             if client is None:
                 error = f"Failed to connect to HashiCorp Vault for account {account_name}"
                 logger.error(error)
-                failures.append(error)
-                continue
+                return [error]
 
             # Retrieve user credentials from Vault
             logger.info(f"Retrieving credentials from Vault for account {account_name}...")
@@ -188,8 +184,7 @@ def main():
             if private_key is None:
                 error = f"Failed to retrieve credentials from Vault for account {account_name}"
                 logger.error(error)
-                failures.append(error)
-                continue
+                return [error]
 
         
             # Download Terraform state 
@@ -203,8 +198,7 @@ def main():
             if workspace_id is None:
                 error = f"Account {account_name}: Failed to get Terraform workspace ID"
                 logger.error(error)
-                failures.append(error)
-                continue
+                return [error]
 
 
             logger.info(f"Retrieving state download URL for workspace {workspace_id}...")
@@ -212,16 +206,14 @@ def main():
             if download_url is None:
                 error = f"Account {account_name}: Failed to get Terraform state download URL"
                 logger.error(error)
-                failures.append(error)
-                continue
+                return [error]
 
             logger.info(f"Downloading state file to {tf_statefile}...")
             tf_state = terraform_utils.download_state_file(download_url, str(tf_statefile), headers)
             if tf_state is None:
                 error = f"Account {account_name}: Failed to download or parse Terraform state"
                 logger.error(error)
-                failures.append(error)
-                continue
+                return [error]
 
             # Process each resource type and collect drift results
             output = {}
@@ -240,7 +232,7 @@ def main():
                 if sf_resources is None:
                     error = f"Account {account_name}: Failed to query {resource}'s from Snowflake"
                     logger.error(error)
-                    failures.append(error)
+                    account_failures.append(error)
                     continue
 
 
@@ -249,7 +241,7 @@ def main():
                 if drifts is None:
                     error: f"Account {account_name}: Failure during drift detection"
                     logger.error(error)
-                    failures.append(error)
+                    account_failures.append(error)
                     continue
                 output[resource] = drifts
             
@@ -264,11 +256,35 @@ def main():
                     with open(output_file, "w") as f:
                         json.dump(output, f, indent=2)
                     logger.info(f"Drift results written to {output_file}")
+                    
+                    # Send HTML email with drift table
                     email_subject = f"{account_name}: Snowflake-Terraform Drift Detected"
-                    message = f"Snowflake-Terraform Drift File Location: {output_file}"
-                    mail_utils.send_email(email_subject, message, sender_email, email_recipients)
+                    mail_utils.send_drift_email(
+                        email_subject, 
+                        account_name, 
+                        output, 
+                        str(output_file), 
+                        sender_email, 
+                        email_recipients
+                    )
                 except Exception as file_error:
                     error = f"Error writing to output file {output_file}: {file_error}"
+                    logger.error(error)
+                    account_failures.append(error)
+            
+            return account_failures
+
+        # Execute account processing in parallel
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        with ThreadPoolExecutor() as executor:
+            future_to_account = {executor.submit(process_account, val): val for val in account_config}
+            for future in as_completed(future_to_account):
+                try:
+                    account_failures = future.result()
+                    failures.extend(account_failures)
+                except Exception as exc:
+                    error = f"Account processing generated an exception: {exc}"
                     logger.error(error)
                     failures.append(error)
         
@@ -287,7 +303,13 @@ def main():
         {summary}
         check logs for details
         """
-        mail_utils.send_email(email_subject, message, sender_email, email_recipients)
+        # Note: Sending failure email to the first account's sender/recipient as a fallback
+        # In a real scenario, this might need a dedicated admin email config
+        if account_config and isinstance(account_config, list) and len(account_config) > 0:
+             fallback_sender = account_config[0].get("SENDER_EMAIL")
+             fallback_recipients = account_config[0].get("EMAIL_RECIPIENTS")
+             if fallback_sender and fallback_recipients:
+                 mail_utils.send_email(email_subject, message, fallback_sender, fallback_recipients)
     else:
         logger.info("No failures detected")
 

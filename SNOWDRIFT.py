@@ -4,7 +4,7 @@ import json
 import argparse
 import smtplib
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 from pykeepass import PyKeePass
 from utils import config_utils, keepass_utils, mail_utils, snowflake_utils, synonyms_utils, terraform_utils, vault_utils
 from components import dependencies, resource_comparison
@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument("--tfc-api-base-url",  default="https://app.terraform.io/api/v2", metavar="", help="Terraform Cloud API base URL")
     parser.add_argument("--tfc-org", default="", metavar="", help="Terraform Cloud organization name")
     parser.add_argument("--tf-token-name", default="Terraform Team Token",  metavar="", help="Title of Terraform Cloud API token in KeePass")
+    parser.add_argument("--send-consolidated-email", action="store_true", help="Send one consolidated email for all accounts instead of individual emails")
     return parser.parse_args()
 
 
@@ -45,6 +46,7 @@ def main():
         None
     """
     failures : List[str] = []
+    account_drift_summary : List[Dict[str, Any]] = []
 
     try:
         # Parse input arguments
@@ -61,6 +63,7 @@ def main():
         synonyms_config = inputs.synonyms_config
         tfc_api_base_url = inputs.tfc_api_base_url
         tfc_org = inputs.tfc_org
+        send_consolidated_email = inputs.send_consolidated_email
 
         # Construct configuration file paths relative to alerts_location
         account_config_path = alerts_location / accounts_config_file
@@ -123,8 +126,23 @@ def main():
             failures.append(error)
             return
 
-        def process_account(val: Dict[str, Any]) -> List[str]:
+        def process_account(val: Dict[str, Any]) -> Tuple[List[str], Dict[str, Any]]:
+            """
+            Process a single account and return failures and drift summary.
+            
+            Returns:
+                Tuple containing:
+                - List of error messages (account_failures)
+                - Dictionary with drift summary for this account
+            """
             account_failures = []
+            drift_summary = {
+                'account_name': '',
+                'total_drifts': 0,
+                'resource_types': {},
+                'output_file': ''
+            }
+            
             required_fields = ["VAULT_URL", "SECRET_PATH", "VAULT_NAMESPACE", "MOUNT_POINT",
                               "ACCOUNT_NAME", "HOST", "USER_NAME", "EMAIL_RECIPIENTS",
                               "SENDER_EMAIL", "SNOWFLAKE_WAREHOUSE", "SNOWFLAKE_ROLE",
@@ -132,7 +150,7 @@ def main():
             if not isinstance(val, dict) or not all(field in val for field in required_fields):
                 error = "Invalid account configuration: missing required fields"
                 logger.error(error)
-                return [error]
+                return ([error], drift_summary)
 
             vault_url = val["VAULT_URL"]
             secret_path = val["SECRET_PATH"]
@@ -148,17 +166,19 @@ def main():
             snow_db = val["SNOWFLAKE_DB"]
             tfc_workspace_name = val["TFC_WORKSPACE_NAME"]
 
+            drift_summary['account_name'] = account_name
+
             if not all(isinstance(param, str) and param.strip() for param in [
                 vault_url, secret_path, vault_namespace, mount_point, account_name, host,
                 user_name, sender_email, snow_warehouse, snow_role, snow_db, tfc_workspace_name
             ]):
                 error = f"Invalid configuration for account {account_name}: all fields must be non-empty strings"
                 logger.error(error)
-                return [error]
+                return ([error], drift_summary)
             if not isinstance(email_recipients, (str, list)) or (isinstance(email_recipients, str) and not email_recipients.strip()):
                 error = f"Invalid email_recipients for account {account_name}"
                 logger.error(error)
-                return [error]
+                return ([error], drift_summary)
 
             # Retrieve Vault credentials from KeePass
             logger.info(f"Retrieving Vault credentials for user {user_name}...")
@@ -166,7 +186,7 @@ def main():
             if vault_entries is None:
                 error = f"Vault credentials for user {user_name} not found in KeePass"
                 logger.error(error)
-                return [error]
+                return ([error], drift_summary)
             role_id = vault_entries.username
             secret_id = vault_entries.password
 
@@ -176,7 +196,7 @@ def main():
             if client is None:
                 error = f"Failed to connect to HashiCorp Vault for account {account_name}"
                 logger.error(error)
-                return [error]
+                return ([error], drift_summary)
 
             # Retrieve user credentials from Vault
             logger.info(f"Retrieving credentials from Vault for account {account_name}...")
@@ -184,7 +204,7 @@ def main():
             if private_key is None:
                 error = f"Failed to retrieve credentials from Vault for account {account_name}"
                 logger.error(error)
-                return [error]
+                return ([error], drift_summary)
 
         
             # Download Terraform state 
@@ -198,7 +218,7 @@ def main():
             if workspace_id is None:
                 error = f"Account {account_name}: Failed to get Terraform workspace ID"
                 logger.error(error)
-                return [error]
+                return ([error], drift_summary)
 
 
             logger.info(f"Retrieving state download URL for workspace {workspace_id}...")
@@ -206,14 +226,14 @@ def main():
             if download_url is None:
                 error = f"Account {account_name}: Failed to get Terraform state download URL"
                 logger.error(error)
-                return [error]
+                return ([error], drift_summary)
 
             logger.info(f"Downloading state file to {tf_statefile}...")
             tf_state = terraform_utils.download_state_file(download_url, str(tf_statefile), headers)
             if tf_state is None:
                 error = f"Account {account_name}: Failed to download or parse Terraform state"
                 logger.error(error)
-                return [error]
+                return ([error], drift_summary)
 
             # Process each resource type and collect drift results
             output = {}
@@ -239,7 +259,7 @@ def main():
                 logger.info(f"Comparing {resource}s...")
                 drifts = resource_comparison.compare_resources(tf_state, sf_resources, resource, attributes, synonyms)
                 if drifts is None:
-                    error: f"Account {account_name}: Failure during drift detection"
+                    error = f"Account {account_name}: Failure during drift detection"
                     logger.error(error)
                     account_failures.append(error)
                     continue
@@ -257,22 +277,30 @@ def main():
                         json.dump(output, f, indent=2)
                     logger.info(f"Drift results written to {output_file}")
                     
-                    # Send HTML email with drift table
-                    email_subject = f"{account_name}: Snowflake-Terraform Drift Detected"
-                    mail_utils.send_drift_email(
-                        email_subject, 
-                        account_name, 
-                        output, 
-                        str(output_file), 
-                        sender_email, 
-                        email_recipients
-                    )
+                    # Populate drift summary
+                    drift_summary['output_file'] = str(output_file)
+                    for resource_type, drifts in output.items():
+                        if drifts:
+                            drift_summary['resource_types'][resource_type] = len(drifts)
+                            drift_summary['total_drifts'] += len(drifts)
+                    
+                    # Send individual email only if consolidated email is not enabled
+                    if not send_consolidated_email:
+                        email_subject = f"{account_name}: Snowflake-Terraform Drift Detected"
+                        mail_utils.send_drift_email(
+                            email_subject, 
+                            account_name, 
+                            output, 
+                            str(output_file), 
+                            sender_email, 
+                            email_recipients
+                        )
                 except Exception as file_error:
                     error = f"Error writing to output file {output_file}: {file_error}"
                     logger.error(error)
                     account_failures.append(error)
             
-            return account_failures
+            return (account_failures, drift_summary)
 
         # Execute account processing in parallel
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -281,12 +309,31 @@ def main():
             future_to_account = {executor.submit(process_account, val): val for val in account_config}
             for future in as_completed(future_to_account):
                 try:
-                    account_failures = future.result()
+                    account_failures, drift_summary = future.result()
                     failures.extend(account_failures)
+                    
+                    # Collect drift summaries for consolidated email
+                    if drift_summary['total_drifts'] > 0:
+                        account_drift_summary.append(drift_summary)
+                        
                 except Exception as exc:
                     error = f"Account processing generated an exception: {exc}"
                     logger.error(error)
                     failures.append(error)
+        
+        # Send consolidated email if enabled and there are drifts
+        if send_consolidated_email and account_drift_summary:
+            logger.info(f"Sending consolidated drift email for {len(account_drift_summary)} account(s)...")
+            # Use email settings from first account as default
+            if account_config and isinstance(account_config, list) and len(account_config) > 0:
+                fallback_sender = account_config[0].get("SENDER_EMAIL")
+                fallback_recipients = account_config[0].get("EMAIL_RECIPIENTS")
+                if fallback_sender and fallback_recipients:
+                    mail_utils.send_consolidated_drift_email(
+                        account_drift_summary,
+                        fallback_sender,
+                        fallback_recipients
+                    )
         
         # Final Summary #                    
         logger.info(f"Drift detection completed. Total failures: {len(failures)}")
@@ -298,7 +345,7 @@ def main():
 
     if failures:
         summary = "\n".join(f". {f}" for f in failures)
-        email_subject = f"FAILURE - Snowflake-Terraform Drift Detected"
+        email_subject = f"FAILURE - Snowflake-Terraform Drift Detection"
         message = f""" Drift Detection completed with {len(failures)} failure(s):
         {summary}
         check logs for details

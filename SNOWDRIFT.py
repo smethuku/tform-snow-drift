@@ -265,6 +265,15 @@ def main():
                     continue
                 output[resource] = drifts
             
+            # Cleanup: Delete Terraform state file after comparison
+            try:
+                if tf_statefile.exists():
+                    tf_statefile.unlink()
+                    logger.info(f"Deleted Terraform state file: {tf_statefile}")
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to delete Terraform state file {tf_statefile}: {cleanup_error}")
+                # Don't add to failures - this is not critical
+            
             # Save Drift Output
             output_file = alerts_location / "drift_output" / f"{tfc_workspace_name.strip()}_drift.json"
             output_file.parent.mkdir(parents=True, exist_ok=True)

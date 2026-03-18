@@ -14,7 +14,25 @@
         "Attributes": ["name", "login_name", "display_name","first_name","last_name","email","must_change_password","disabled","default_warehouse","default_namespace","default_role","default_secondary_roles","comment"],
         "Sql": "SHOW USERS; SELECT \"name\", \"login_name\", \"display_name\",\"first_name\",\"last_name\",\"email\",\"must_change_password\",\"disabled\",\"default_warehouse\",\"default_namespace\",\"default_role\",\"default_secondary_roles\",\"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));"
         
-    }
+    },
+	{
+    "Resource": "Role",
+    "Attributes": [
+      "name",
+      "comment",
+      "owner"
+    ],
+    "Sql": "SHOW ROLES; SELECT \"name\", \"comment\", \"owner\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" LIKE 'P_%';"
+  },
+  {
+    "Resource": "RoleGrant",
+    "Attributes": [
+      "role",
+      "grantee_name",
+      "granted_to"
+    ],
+    "Sql": "CALL_PROCEDURE"
+  }
 
 
 ]

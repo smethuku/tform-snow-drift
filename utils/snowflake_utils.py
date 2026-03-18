@@ -118,3 +118,132 @@ def get_snowflake_resources(resource: str, attributes: List[str], sql_query: str
             cursor.close()
         if 'conn' in locals():
             conn.close()
+
+
+def get_role_grants_via_procedure(host: str, account_name: str, user_name: str, 
+                                  private_key: str, snow_warehouse: str, snow_role: str, 
+                                  snow_db: str, attributes: List[str]) -> List[Dict[str, Any]]:
+    """
+    Retrieve all role grants using the stored procedure get_all_grants_of_roles().
+    
+    This function calls your custom stored procedure that efficiently retrieves
+    all role grants for roles matching your pattern (P_%).
+    
+    Args:
+        host (str): Snowflake host URL.
+        account_name (str): Snowflake account identifier.
+        user_name (str): Username for Snowflake authentication.
+        private_key (str): PEM-encoded private key for Snowflake authentication.
+        snow_warehouse (str): Name of the Snowflake warehouse to use.
+        snow_role (str): Role to assume in Snowflake (must have permission to call procedure).
+        snow_db (str): Name of the Snowflake database containing the procedure.
+        attributes (List[str]): List of attribute names to extract (e.g., ['role', 'grantee_name']).
+ 
+    Returns:
+        List[Dict[str, Any]]: A list of role grant dictionaries.
+        
+    Example return value:
+        [
+            {'role': 'ANALYTICS_READ_FR', 'grantee_name': 'ANALYTICS_READ_UFR'},
+            {'role': 'ANALYTICS_WRITE_FR', 'grantee_name': 'ANALYTICS_WRITE_UFR'},
+            ...
+        ]
+    """
+    try:
+        logger.info(f"Retrieving role grants via stored procedure for account {account_name}")
+        
+        # Load and serialize the private key
+        p_key = serialization.load_pem_private_key(
+            private_key.encode(),
+            password=None,
+            backend=default_backend()
+        )
+        pkb = p_key.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        
+        # Establish connection to Snowflake
+        conn = snowflake.connector.connect(
+            host=host,
+            user=user_name,
+            private_key=pkb,
+            account=account_name,
+            warehouse=snow_warehouse,
+            role=snow_role,
+            database=snow_db
+        )
+        
+        cursor = conn.cursor()
+        
+        # Call the stored procedure
+        logger.info("Calling stored procedure: get_all_grants_of_roles()")
+        cursor.execute("CALL get_all_grants_of_roles()")
+        
+        # Fetch all results
+        rows = cursor.fetchall()
+        
+        # Get column names from the result
+        columns = [col[0].upper() for col in cursor.description]
+        col_index = {col: idx for idx, col in enumerate(columns)}
+        
+        logger.info(f"Stored procedure returned columns: {columns}")
+        logger.info(f"Retrieved {len(rows)} role grant records")
+        
+        # Map stored procedure columns to expected attributes
+        # Your procedure returns: role_name, grantee_name
+        # We need to map these to the attribute names expected by the comparison logic
+        column_mapping = {
+            'ROLE_NAME': 'role',
+            'GRANTEE_NAME': 'grantee_name',
+            'GRANT_NAME': 'grantee_name'  # Alias in case you use GRANT_NAME
+        }
+        
+        # Build list of role grant dictionaries
+        role_grants = []
+        for row in rows:
+            grant_dict = {}
+            
+            # Map each requested attribute
+            for attr in attributes:
+                attr_upper = attr.upper()
+                
+                # Check if we have a mapping for this attribute
+                mapped_column = column_mapping.get(attr_upper, attr_upper)
+                
+                if mapped_column in col_index:
+                    grant_dict[attr] = row[col_index[mapped_column]]
+                elif attr_upper in col_index:
+                    grant_dict[attr] = row[col_index[attr_upper]]
+                else:
+                    # Attribute not found - set default values
+                    if attr == 'granted_to':
+                        grant_dict[attr] = 'ROLE'  # Your procedure only returns role grants
+                    elif attr == 'granted_by':
+                        grant_dict[attr] = None  # Not available from procedure
+                    else:
+                        logger.warning(f"Attribute '{attr}' not found in procedure results")
+                        grant_dict[attr] = None
+            
+            role_grants.append(grant_dict)
+        
+        cursor.close()
+        conn.close()
+        
+        logger.info(f"Successfully processed {len(role_grants)} role grants")
+        return role_grants
+        
+    except snowflake.connector.errors.ProgrammingError as prog_error:
+        logger.error(f"Stored procedure error - {prog_error}")
+        logger.error("Ensure get_all_grants_of_roles() procedure exists in the database")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to retrieve role grants via procedure - {e}")
+        return None
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+ 

@@ -1,0 +1,151 @@
+-- ==============================================================================
+-- ENVIRONMENT-AWARE STORED PROCEDURE WITH SMART FILTERING
+-- ==============================================================================
+-- By default: Excludes D_ (Dev) and T_ (Test) roles - only returns Prod (P_)
+-- With ENV parameter: Can explicitly include Dev, Test, or All environments
+-- ==============================================================================
+
+CREATE OR REPLACE PROCEDURE get_all_grants_of_roles(
+    ENV STRING DEFAULT 'PROD'
+)
+RETURNS TABLE (
+    role_name           STRING,
+    grantee_name        STRING,
+    granted_to          STRING
+)
+LANGUAGE SQL
+COMMENT = 'Retrieves role and user grants with environment filtering.
+           ENV parameter options:
+           - ''PROD'' (default): Only production roles (excludes D_* and T_*)
+           - ''DEV'': Only development roles (D_*)
+           - ''TEST'': Only test roles (T_*)
+           - ''ALL'': All environments (P_*, D_*, T_*)
+           
+           Usage:
+           CALL get_all_grants_of_roles()            -- Prod only (default)
+           CALL get_all_grants_of_roles(''PROD'')    -- Prod only (explicit)
+           CALL get_all_grants_of_roles(''DEV'')     -- Dev only
+           CALL get_all_grants_of_roles(''TEST'')    -- Test only
+           CALL get_all_grants_of_roles(''ALL'')     -- All environments'
+AS
+$$
+DECLARE
+    current_role        STRING;
+    show_grants_sql     STRING;
+    role_count          INTEGER DEFAULT 0;
+BEGIN
+    -- Create temp table to store role and user grants
+    CREATE OR REPLACE TEMPORARY TABLE temp_grants_of_roles (
+        role_name           STRING,
+        grantee_name        STRING,
+        granted_to          STRING
+    );
+    
+    -- Step 1: Get all roles
+    SHOW ROLES;
+    
+    -- Step 2: Loop through roles based on ENV parameter
+    LET roles CURSOR FOR 
+        SELECT "name" 
+        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) 
+        WHERE 
+            CASE 
+                -- PROD: Include roles that DON'T start with D_ or T_
+                -- This means: P_* roles and any other custom roles
+                WHEN UPPER(:ENV) = 'PROD' THEN 
+                    "name" NOT LIKE 'D_%' AND "name" NOT LIKE 'T_%'
+                
+                -- DEV: Only D_* roles
+                WHEN UPPER(:ENV) = 'DEV' THEN 
+                    "name" LIKE 'D_%'
+                
+                -- TEST: Only T_* roles
+                WHEN UPPER(:ENV) = 'TEST' THEN 
+                    "name" LIKE 'T_%'
+                
+                -- ALL: All roles (P_*, D_*, T_*, and any others)
+                WHEN UPPER(:ENV) = 'ALL' THEN 
+                    TRUE
+                
+                -- Default to PROD behavior if invalid ENV value
+                ELSE 
+                    "name" NOT LIKE 'D_%' AND "name" NOT LIKE 'T_%'
+            END
+        ORDER BY "name";
+    
+    FOR role_rec IN roles DO
+        LET current_role := role_rec."name";
+        LET role_count := :role_count + 1;
+        
+        -- Step 3: Get grants OF this role (who has this role assigned)
+        LET show_grants_sql := 'SHOW GRANTS OF ROLE IDENTIFIER(\'' || current_role || '\')';
+        EXECUTE IMMEDIATE :show_grants_sql;
+        
+        -- Step 4: Insert only role and user grants (filter out object privileges)
+        INSERT INTO temp_grants_of_roles (role_name, grantee_name, granted_to)
+        SELECT
+            :current_role       AS role_name,
+            "grantee_name"      AS grantee_name,
+            "granted_to"        AS granted_to
+        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+        WHERE "granted_to" IN ('ROLE', 'USER');
+        
+    END FOR;
+    
+    -- Step 5: Return all results
+    LET res RESULTSET := (
+        SELECT * FROM temp_grants_of_roles
+        ORDER BY role_name, granted_to, grantee_name
+    );
+    
+    RETURN TABLE(res);
+END;
+$$;
+
+-- ==============================================================================
+-- GRANT PERMISSIONS
+-- ==============================================================================
+
+GRANT USAGE ON DATABASE mydatabase TO ROLE <your_drift_role>;
+GRANT USAGE ON SCHEMA mydatabase.jump TO ROLE <your_drift_role>;
+GRANT USAGE ON PROCEDURE mydatabase.jump.get_all_grants_of_roles(STRING) TO ROLE <your_drift_role>;
+
+-- ==============================================================================
+-- TESTING
+-- ==============================================================================
+
+-- Default: Production only (excludes D_* and T_*)
+CALL get_all_grants_of_roles();
+
+-- Explicit Production
+CALL get_all_grants_of_roles('PROD');
+
+-- Development only
+CALL get_all_grants_of_roles('DEV');
+
+-- Test environment only
+CALL get_all_grants_of_roles('TEST');
+
+-- All environments
+CALL get_all_grants_of_roles('ALL');
+
+-- Verify results
+SELECT 
+    CASE 
+        WHEN role_name LIKE 'P_%' THEN 'Production'
+        WHEN role_name LIKE 'D_%' THEN 'Development'
+        WHEN role_name LIKE 'T_%' THEN 'Test'
+        ELSE 'Other'
+    END as environment,
+    granted_to,
+    COUNT(*) as grant_count
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+GROUP BY 
+    CASE 
+        WHEN role_name LIKE 'P_%' THEN 'Production'
+        WHEN role_name LIKE 'D_%' THEN 'Development'
+        WHEN role_name LIKE 'T_%' THEN 'Test'
+        ELSE 'Other'
+    END,
+    granted_to
+ORDER BY environment, granted_to;
